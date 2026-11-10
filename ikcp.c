@@ -917,18 +917,24 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 		else {
 			if (kcp->cwnd < kcp->rmt_wnd) {
 				IUINT32 mss = kcp->mss;
-				if (kcp->cwnd < kcp->ssthresh) {
-					kcp->cwnd++;
-					kcp->incr += mss;
-				}	else {
-					if (kcp->incr < mss) kcp->incr = mss;
-					kcp->incr += (mss * mss) / kcp->incr + (mss / 16);
-					if ((kcp->cwnd + 1) * mss <= kcp->incr) {
-					#if 1
-						kcp->cwnd = (kcp->incr + mss - 1) / ((mss > 0)? mss : 1);
-					#else
+				IUINT32 i;
+				// grow the window once per newly acked segment (as tcp
+				// does), instead of once per input call: a single input
+				// datagram may acknowledge many segments at once (#359)
+				for (i = 0; i < acked_segs; i++) {
+					if (kcp->cwnd < kcp->ssthresh) {
 						kcp->cwnd++;
-					#endif
+						kcp->incr += mss;
+					}	else {
+						if (kcp->incr < mss) kcp->incr = mss;
+						kcp->incr += (mss * mss) / kcp->incr + (mss / 16);
+						if ((kcp->cwnd + 1) * mss <= kcp->incr) {
+						#if 1
+							kcp->cwnd = (kcp->incr + mss - 1) / ((mss > 0)? mss : 1);
+						#else
+							kcp->cwnd++;
+						#endif
+						}
 					}
 				}
 				if (kcp->cwnd > kcp->rmt_wnd) {
