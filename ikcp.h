@@ -190,17 +190,20 @@ typedef struct IQUEUEHEAD iqueue_head;
 #define iqueue_del_init	IQUEUE_DEL_INIT
 #define iqueue_is_empty IQUEUE_IS_EMPTY
 
-#define IQUEUE_FOREACH(iterator, head, TYPE, MEMBER) \
+#define IQUEUE_FOREACH(pos, head) \
+	for( (pos) = (head)->next; (pos) != (head) ; (pos) = (pos)->next )
+
+#define IQUEUE_FOREACH_ENTRY(iterator, head, TYPE, MEMBER) \
 	for ((iterator) = iqueue_entry((head)->next, TYPE, MEMBER); \
 		&((iterator)->MEMBER) != (head); \
 		(iterator) = iqueue_entry((iterator)->MEMBER.next, TYPE, MEMBER))
 
-#define iqueue_foreach(iterator, head, TYPE, MEMBER) \
-	IQUEUE_FOREACH(iterator, head, TYPE, MEMBER)
+#define iqueue_foreach(pos, head) \
+	IQUEUE_FOREACH(pos, head)
 
-#define iqueue_foreach_entry(pos, head) \
-	for( (pos) = (head)->next; (pos) != (head) ; (pos) = (pos)->next )
-	
+#define iqueue_foreach_entry(iterator, head, TYPE, MEMBER) \
+	IQUEUE_FOREACH_ENTRY(iterator, head, TYPE, MEMBER)
+
 
 #define __iqueue_splice(list, head) do {	\
 		iqueue_head *first = (list)->next, *last = (list)->prev; \
