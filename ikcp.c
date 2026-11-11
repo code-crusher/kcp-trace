@@ -863,6 +863,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 				ikcp_ack_push(kcp, sn, ts);
 				if (_itimediff(sn, kcp->rcv_nxt) >= 0) {
 					seg = ikcp_segment_new(kcp, len);
+					if (seg == NULL) {
+						return -2;
+					}
 					seg->conv = conv;
 					seg->cmd = cmd;
 					seg->frg = frg;

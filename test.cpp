@@ -155,12 +155,158 @@ void test(int mode)
 	const char *names[3] = { "default", "normal", "fast" };
 	printf("%s mode result (%dms):\n", names[mode], (int)ts1);
 	printf("avgrtt=%d maxrtt=%d tx=%d\n", (int)(sumrtt / count), (int)maxrtt, (int)vnet->tx1);
+	delete vnet;
 	printf("press enter to next ...\n");
-	char ch; scanf("%c", &ch);
+	if (isatty(0)) { char ch; scanf("%c", &ch); }
+}
+
+//=====================================================================
+// 回归测试：issue #437 (ikcp_release crash in android)
+//
+// 两个目标：
+// 1. 在发送队列满载时销毁 kcp 会话（对应
+//    Session_C_Destroy -> ikcp_release 的使用场景），
+//    ikcp_release 必须能安全清理所有步骤。
+// 2. 分配失败（ikcp_segment_new 返回 NULL）时
+//    ikcp_input 必须返回错误而不是崩溃，
+//    之后的 ikcp_release 也不得崩溃。
+//=====================================================================
+
+static int fail_alloc = 0;	// 剩余可分配次数，<0 表示不限
+
+static void* test_malloc(size_t size)
+{
+	if (fail_alloc == 0) return malloc(size);
+	if (fail_alloc > 0) {
+		fail_alloc--;
+		return NULL;
+	}
+	return malloc(size);
+}
+
+static void test_free(void* ptr)
+{
+	free(ptr);
+}
+
+static int issue437_output(const char *buf, int len, ikcpcb *kcp, void *user)
+{
+	(void)buf; (void)len; (void)kcp; (void)user;
+	return 0;
+}
+
+// 构造一个完整的 PUSH 数据包：conv + 头部 + len 字节载荷
+static int issue437_build_push(char *out, IUINT32 conv, IUINT32 sn,
+	const char *payload, IUINT32 len)
+{
+	char *p = out;
+	memcpy(p, &conv, 4); p += 4;
+	*p++ = (char)81;			// cmd: IKCP_CMD_PUSH
+	*p++ = (char)0;				// frg
+	{ unsigned short wnd = 32; memcpy(p, &wnd, 2); p += 2; }
+	{ IUINT32 v = 0; memcpy(p, &v, 4); p += 4; }		// ts
+	memcpy(p, &sn, 4); p += 4;					// sn
+	{ IUINT32 v = 0; memcpy(p, &v, 4); p += 4; }	// una
+	memcpy(p, &len, 4); p += 4;					// len
+	if (len > 0 && payload) {
+		memcpy(p, payload, len); p += len;
+	}
+	return (int)(p - out);
+}
+
+static void test_issue_437(void)
+{
+	char payload[512];
+	char packet[1024];
+	ikcpcb *kcp;
+	int i, hr;
+
+	memset(payload, 0xa5, sizeof(payload));
+	printf("==== issue #437 regression tests ====\n");
+
+	// ---- 场景 1：队列满载时销毁会话 ----
+	// 对应 android 上 Session_C_Destroy 的使用方式：
+	// 创建、发送、（未完全 flush）、销毁
+	for (i = 0; i < 100; i++) {
+		kcp = ikcp_create(0x11223344, (void*)0);
+		assert(kcp != NULL);
+		kcp->output = issue437_output;
+		ikcp_send(kcp, payload, (int)sizeof(payload));
+		ikcp_send(kcp, payload, 300);
+		if ((i & 1) == 0) ikcp_update(kcp, 1);	// 一半会话有未 flush 的发送队列
+		ikcp_release(kcp);
+	}
+	printf("[PASS] release with queued segments: 100 cycles\n");
+
+	// ---- 场景 2：分配失败下的 ikcp_input 与 ikcp_release ----
+	kcp = ikcp_create(0x11223344, (void*)0);
+	assert(kcp != NULL);
+	kcp->output = issue437_output;
+
+	// 先注入一个合法的 PUSH 包，让设备处于已知状态
+	hr = issue437_build_push(packet, 0x11223344, 0, payload, 100);
+	ikcp_input(kcp, packet, hr);
+	ikcp_update(kcp, 1);
+
+	// 接下来注入新的 PUSH 时强制 segment 分配失败：
+	// ikcp_input 应返回负值，而不是解引用空指针
+	ikcp_allocator(test_malloc, test_free);
+	fail_alloc = 1;		// 下一次分配（segment）失败
+	hr = issue437_build_push(packet, 0x11223344, 1, payload, 100);
+	{
+		int ret = ikcp_input(kcp, packet, hr);
+		if (ret >= 0) {
+			printf("[FAIL] ikcp_input should fail on allocation failure\n");
+			exit(1);
+		}
+	}
+	// acklist 扩容也可能失败：那条路径会 abort，
+	// 这里不测该路径，只确保主路径的健壮性
+	fail_alloc = 0;
+
+	// 分配失败之后，会话仍应能正常销毁
+	ikcp_release(kcp);
+	printf("[PASS] input with failed allocation, then release\n");
+
+	// 恢复默认分配器，免影响后续测试
+	ikcp_allocator(NULL, NULL);
+
+	// ---- 场景 3：非法/损坏输入下的安全性（老版本崩溃的缘由） ----
+	// len 为负数或超过实际数据长度的包必须被拒绝
+	kcp = ikcp_create(0x11223344, (void*)0);
+	assert(kcp != NULL);
+	kcp->output = issue437_output;
+	{
+		// len 字段伪造为巨大值
+		hr = issue437_build_push(packet, 0x11223344, 0, payload, 100);
+		{ IUINT32 bad = 0x7fffffff; memcpy(packet + 20, &bad, 4); }
+		if (ikcp_input(kcp, packet, hr) >= 0) {
+			printf("[FAIL] oversized len must be rejected\n");
+			exit(1);
+		}
+		// len 字段伪造为高位置位（形式上为负）
+		hr = issue437_build_push(packet, 0x11223344, 0, payload, 100);
+		{ IUINT32 bad = 0x80000000; memcpy(packet + 20, &bad, 4); }
+		if (ikcp_input(kcp, packet, hr) >= 0) {
+			printf("[FAIL] negative len must be rejected\n");
+			exit(1);
+		}
+		// conv 不匹配
+		hr = issue437_build_push(packet, 0x55667788, 0, payload, 100);
+		if (ikcp_input(kcp, packet, hr) >= 0) {
+			printf("[FAIL] mismatched conv must be rejected\n");
+			exit(1);
+		}
+	}
+	ikcp_release(kcp);
+	printf("[PASS] malformed input rejected, session released\n");
+
+	printf("==== issue #437 regression tests passed ====\n");
 }
 
 int main()
 {
+	test_issue_437();	// issue #437 回归测试
 	test(0);	// 默认模式，类似 TCP：正常模式，无快速重传，常规流控
 	test(1);	// 普通模式，关闭流控等
 	test(2);	// 快速模式，所有开关都打开，且关闭流控
