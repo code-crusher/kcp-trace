@@ -160,6 +160,37 @@ The protocol default mode is a standard ARQ, and various acceleration switches c
 
 
 
+# FAQ: ikcp_input receives data but ikcp_recv returns -1
+
+`ikcp_recv` returning `-1` only means "the receive queue is empty, no complete
+message is available right now". It is not an `ikcp_input` failure, and it does
+not mean the underlying UDP layer missed anything. All of the following produce
+"input returns 0, recv returns -1":
+
+- **The datagram is a control packet.** ACKs and window probes (WASK/WINS)
+  carry no upper-level data. The peer normally answers each data packet with an
+  extra ACK-only datagram, so calling `ikcp_recv` for it returns -1. Just ignore
+  it (see the recv loops in `test.cpp`).
+- **The datagram is a duplicate.** `ikcp_input` acknowledges every PUSH packet,
+  and the peer may retransmit until that ACK arrives. A segment with an already
+  delivered `sn` is dropped, so input succeeds while recv returns -1.
+- **The datagram is out of order.** Packets are held in `rcv_buf` until the
+  missing `sn` arrives. Then `kcp->nrcv_buf > 0` while `kcp->nrcv_que == 0`,
+  and `ikcp_recv` returns -1.
+- **The two endpoints are out of sync.** After a peer restart (or after
+  recreating its kcp object) its `sn` starts from zero again and no longer
+  matches the local `rcv_nxt`; such segments are discarded as out of range.
+  On reconnect, recreate the kcp object on both sides.
+- **The `conv` values differ.** `ikcp_input` returns -1 and the data is dropped.
+
+Note also that **`ikcp_input` only queues the ACK to be sent; the ACK actually
+goes out inside `ikcp_update` (which calls `ikcp_flush`)**. You must keep calling
+`ikcp_update` periodically (typically every 10ms-100ms) after `ikcp_input`. If
+`ikcp_update` is called only once at startup, the peer never receives an ACK,
+keeps retransmitting the same data, and the local side sees nothing but
+duplicates, so `ikcp_recv` keeps returning -1.
+
+
 # Document Indexing
 
 Both the use and configuration of the protocol is straightforward, in most cases, after you read the above contents, you can use it. If you need further fine control, such as changing the KCP memory allocator, or if you need more efficient large-scale scheduling of KCP links (such as more than 3,500 links), or to better combine with TCP, you can continue the extensive reading:
