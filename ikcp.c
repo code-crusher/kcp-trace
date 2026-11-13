@@ -212,6 +212,138 @@ static int ikcp_output(ikcpcb *kcp, const void *data, int size)
 	return kcp->output((const char*)data, size, kcp, kcp->user);
 }
 
+
+//---------------------------------------------------------------------
+// SKIP LIST INDEX for rcv_buf
+//
+// rcv_buf keeps segments that arrived out of order, sorted by sn.
+// Searching it linearly for the insertion point of every incoming
+// segment makes out-of-order arrival cost O(N) per segment, which
+// degenerates to O(N^2) for large windows (issue #331). Linux solves
+// the same problem for its tcp ofo queue with a red-black tree; a
+// skip list gives the same O(log N) bounds while staying simple.
+//
+// The circular doubly linked list itself is unchanged (all existing
+// code keeps working unchanged); on top of it each segment carries
+// extra NULL-terminated "skip" pointers to successors in the list,
+// with exponentially growing gaps. Head sentinels live in
+// kcp->rcv_skips. Dequeuing a segment only clears its pointers.
+//---------------------------------------------------------------------
+
+// reset the skip list index (empty rcv_buf)
+static void ikcp_skx_init(ikcpcb *kcp)
+{
+	int i;
+	kcp->skx_seed = 1;
+	for (i = 0; i < IKCP_SKX_MAXLEVEL; i++) {
+		kcp->rcv_skips[i] = (struct IQUEUEHEAD*)NULL;
+	}
+}
+
+// xorshift32: fast, deterministic, private to the kcp block
+static IUINT32 ikcp_skx_random(ikcpcb *kcp)
+{
+	IUINT32 x = kcp->skx_seed;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	kcp->skx_seed = x;
+	return x;
+}
+
+// random height for a new skip list node, in [1, IKCP_SKX_MAXLEVEL]
+static int ikcp_skx_level(ikcpcb *kcp)
+{
+	// count leading one bits: each extra level has 1/2 probability
+	IUINT32 bits = ikcp_skx_random(kcp) | 0x80000000;
+	int level = 1;
+	while (level < IKCP_SKX_MAXLEVEL && (bits & (1 << level)) != 0) {
+		level++;
+	}
+	return level;
+}
+
+// skip pointer of a list position at the given level: the head
+// position is the rcv_buf list head itself, indexed through
+// kcp->rcv_skips; every other position is a segment node
+static struct IQUEUEHEAD *ikcp_skx_ptr(ikcpcb *kcp,
+	const struct IQUEUEHEAD *p, int level)
+{
+	if (p == &kcp->rcv_buf)
+		return kcp->rcv_skips[level];
+	return iqueue_entry(p, IKCPSEG, node)->skips[level];
+}
+
+// find the first queued segment with sn >= target, and record the
+// last position examined on each level into updates[] (the positions
+// whose skip pointers must be fixed when inserting right there).
+// updates may be NULL if only the position is needed.
+static IKCPSEG *ikcp_skx_find(ikcpcb *kcp, IUINT32 target,
+	struct IQUEUEHEAD **updates)
+{
+	struct IQUEUEHEAD *p = &kcp->rcv_buf;
+	struct IQUEUEHEAD *next;
+	int i;
+	for (i = IKCP_SKX_MAXLEVEL - 1; i >= 0; i--) {
+		while ((next = ikcp_skx_ptr(kcp, p, i)) != NULL) {
+			IKCPSEG *seg = iqueue_entry(next, IKCPSEG, node);
+			if (_itimediff(seg->sn, target) >= 0) break;
+			p = &seg->node;
+		}
+		if (updates) updates[i] = p;
+	}
+	if ((next = ikcp_skx_ptr(kcp, p, 0)) == NULL) return NULL;
+	return iqueue_entry(next, IKCPSEG, node);
+}
+
+// unlink a segment that is about to leave rcv_buf from the head of
+// the list (the only way segments leave: in-order draining). skip
+// pointers only ever point forward, so no other segment can point
+// to the head segment — only the head sentinels can, and they must
+// be redirected over the departing node.
+static void ikcp_skx_unlink(ikcpcb *kcp, IKCPSEG *seg)
+{
+	int i;
+	for (i = 0; i < seg->level; i++) {
+		if (kcp->rcv_skips[i] == &seg->node) {
+			kcp->rcv_skips[i] = seg->skips[i];
+		}
+		seg->skips[i] = (struct IQUEUEHEAD*)NULL;
+	}
+	seg->level = 0;
+}
+
+// insert a segment into the sorted rcv_buf list and index it
+static void ikcp_skx_insert(ikcpcb *kcp, IKCPSEG *newseg)
+{
+	struct IQUEUEHEAD *updates[IKCP_SKX_MAXLEVEL];
+	IKCPSEG *next;
+	int i, level;
+
+	iqueue_init(&newseg->node);
+	newseg->level = 0;
+	for (i = 0; i < IKCP_SKX_MAXLEVEL; i++) {
+		newseg->skips[i] = (struct IQUEUEHEAD*)NULL;
+	}
+
+	// find the first node with sn >= newseg->sn, recording the
+	// search path; the new node goes right before that node
+	next = ikcp_skx_find(kcp, newseg->sn, updates);
+	iqueue_add_tail(&newseg->node,
+		next ? &next->node : &kcp->rcv_buf);
+
+	// splice the new node into every level of the search path
+	level = ikcp_skx_level(kcp);
+	newseg->level = level;
+	for (i = 0; i < level; i++) {
+		newseg->skips[i] = ikcp_skx_ptr(kcp, updates[i], i);
+		if (updates[i] == &kcp->rcv_buf)
+			kcp->rcv_skips[i] = &newseg->node;
+		else
+			iqueue_entry(updates[i], IKCPSEG, node)->skips[i] = &newseg->node;
+	}
+}
+
 // output queue
 void ikcp_qprint(const char *name, const struct IQUEUEHEAD *head)
 {
@@ -264,6 +396,7 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user)
 	iqueue_init(&kcp->rcv_queue);
 	iqueue_init(&kcp->snd_buf);
 	iqueue_init(&kcp->rcv_buf);
+	ikcp_skx_init(kcp);
 	kcp->nrcv_buf = 0;
 	kcp->nsnd_buf = 0;
 	kcp->nrcv_que = 0;
@@ -316,6 +449,7 @@ void ikcp_release(ikcpcb *kcp)
 		}
 		while (!iqueue_is_empty(&kcp->rcv_buf)) {
 			seg = iqueue_entry(kcp->rcv_buf.next, IKCPSEG, node);
+			ikcp_skx_unlink(kcp, seg);
 			iqueue_del(&seg->node);
 			ikcp_segment_delete(kcp, seg);
 		}
@@ -420,6 +554,7 @@ int ikcp_recv(ikcpcb *kcp, char *buffer, int len)
 	while (! iqueue_is_empty(&kcp->rcv_buf)) {
 		seg = iqueue_entry(kcp->rcv_buf.next, IKCPSEG, node);
 		if (seg->sn == kcp->rcv_nxt && kcp->nrcv_que < kcp->rcv_wnd) {
+			ikcp_skx_unlink(kcp, seg);
 			iqueue_del(&seg->node);
 			kcp->nrcv_buf--;
 			iqueue_add_tail(&seg->node, &kcp->rcv_queue);
@@ -713,31 +848,21 @@ static void ikcp_ack_get(const ikcpcb *kcp, int p, IUINT32 *sn, IUINT32 *ts)
 //---------------------------------------------------------------------
 void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
 {
-	struct IQUEUEHEAD *p, *prev;
+	IKCPSEG *seg;
 	IUINT32 sn = newseg->sn;
-	int repeat = 0;
-	
+
 	if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) >= 0 ||
 		_itimediff(sn, kcp->rcv_nxt) < 0) {
 		ikcp_segment_delete(kcp, newseg);
 		return;
 	}
 
-	for (p = kcp->rcv_buf.prev; p != &kcp->rcv_buf; p = prev) {
-		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
-		prev = p->prev;
-		if (seg->sn == sn) {
-			repeat = 1;
-			break;
-		}
-		if (_itimediff(sn, seg->sn) > 0) {
-			break;
-		}
-	}
+	// find the first queued segment with sn >= new one; the
+	// skip list makes this O(log N) instead of O(N)
+	seg = ikcp_skx_find(kcp, sn, NULL);
 
-	if (repeat == 0) {
-		iqueue_init(&newseg->node);
-		iqueue_add(&newseg->node, p);
+	if (seg == NULL || seg->sn != sn) {
+		ikcp_skx_insert(kcp, newseg);
 		kcp->nrcv_buf++;
 	}	else {
 		ikcp_segment_delete(kcp, newseg);
@@ -752,6 +877,7 @@ void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
 	while (! iqueue_is_empty(&kcp->rcv_buf)) {
 		IKCPSEG *seg = iqueue_entry(kcp->rcv_buf.next, IKCPSEG, node);
 		if (seg->sn == kcp->rcv_nxt && kcp->nrcv_que < kcp->rcv_wnd) {
+			ikcp_skx_unlink(kcp, seg);
 			iqueue_del(&seg->node);
 			kcp->nrcv_buf--;
 			iqueue_add_tail(&seg->node, &kcp->rcv_queue);

@@ -140,6 +140,12 @@ struct IQUEUEHEAD {
 
 typedef struct IQUEUEHEAD iqueue_head;
 
+/* max levels of the rcv_buf skip list index; 2^16 spans the
+ * largest possible receive window (see the skip list in ikcp.c) */
+#ifndef IKCP_SKX_MAXLEVEL
+#define IKCP_SKX_MAXLEVEL 16
+#endif
+
 
 //---------------------------------------------------------------------
 // queue init                                                         
@@ -274,6 +280,8 @@ typedef struct IKCPCB ikcpcb;
 struct IKCPSEG
 {
 	struct IQUEUEHEAD node;
+	int level;
+	struct IQUEUEHEAD *skips[IKCP_SKX_MAXLEVEL];
 	IUINT32 conv;
 	IUINT32 cmd;
 	IUINT32 frg;
@@ -335,6 +343,8 @@ struct IKCPCB
 	struct IQUEUEHEAD rcv_queue;
 	struct IQUEUEHEAD snd_buf;
 	struct IQUEUEHEAD rcv_buf;
+	struct IQUEUEHEAD *rcv_skips[IKCP_SKX_MAXLEVEL];
+	IUINT32 skx_seed;
 	IUINT32 *acklist;
 	IUINT32 ackcount;
 	IUINT32 ackblock;
