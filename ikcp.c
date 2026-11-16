@@ -33,7 +33,8 @@ const IUINT32 IKCP_CMD_WINS = 84;		// cmd: window size (tell)
 const IUINT32 IKCP_ASK_SEND = 1;		// need to send IKCP_CMD_WASK
 const IUINT32 IKCP_ASK_TELL = 2;		// need to send IKCP_CMD_WINS
 const IUINT32 IKCP_WND_SND = 32;
-const IUINT32 IKCP_WND_RCV = 128;       // must >= max fragment size
+const IUINT32 IKCP_WND_RCV = 128;       // default/minimum receive window
+const IUINT32 IKCP_FRG_LIMIT = 256;     // max fragments per message ('frg' is 8 bits)
 const IUINT32 IKCP_MTU_DEF = 1400;
 const IUINT32 IKCP_ACK_FAST	= 3;
 const IUINT32 IKCP_INTERVAL	= 100;
@@ -515,8 +516,14 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 	if (len <= (int)kcp->mss) count = 1;
 	else count = (len + kcp->mss - 1) / kcp->mss;
 
-	if (count >= (int)IKCP_WND_RCV) {
-		if (kcp->stream != 0 && sent > 0) 
+	// A message can only be reassembled by the peer once all of its
+	// fragments fit in the receive queue at the same time, so the receive
+	// window bounds the number of fragments in one call. In message mode
+	// 'frg' (an 8-bit field) additionally caps a single message; stream
+	// mode always sets 'frg' to zero and is only bounded by the window.
+	if (count >= (int)kcp->rcv_wnd ||
+		(kcp->stream == 0 && count > (int)IKCP_FRG_LIMIT)) {
+		if (kcp->stream != 0 && sent > 0)
 			return sent;
 		return -2;
 	}
@@ -1367,7 +1374,7 @@ int ikcp_wndsize(ikcpcb *kcp, int sndwnd, int rcvwnd)
 		if (sndwnd > 0) {
 			kcp->snd_wnd = sndwnd;
 		}
-		if (rcvwnd > 0) {   // must >= max fragment size
+		if (rcvwnd > 0) {   // cannot be smaller than the default window
 			kcp->rcv_wnd = _imax_(rcvwnd, IKCP_WND_RCV);
 		}
 	}

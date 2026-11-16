@@ -159,8 +159,154 @@ void test(int mode)
 	char ch; scanf("%c", &ch);
 }
 
+//=====================================================================
+// 回归测试：issue #449
+//
+// ikcp_send 原来用常量 IKCP_WND_RCV 限制单次发送的分片数，即使通过
+// ikcp_wndsize 调大了 rcv_wnd，也无法发送超过 IKCP_WND_RCV 个分片的
+// 消息。现在上限跟随 rcv_wnd，同时消息模式仍受 8 位 frg 字段约束
+// （最多 256 个分片），流模式不使用 frg，因此只受窗口约束。
+//=====================================================================
+
+// 一个无丢包、无延迟的本地链路
+struct KcpPipe {
+	std::vector<std::vector<char> > queue;
+};
+
+static int pipe_output(const char *buf, int len, ikcpcb *kcp, void *user)
+{
+	KcpPipe *pipe = (KcpPipe*)user;
+	(void)kcp;
+	pipe->queue.push_back(std::vector<char>(buf, buf + len));
+	return 0;
+}
+
+static void pipe_pump(KcpPipe &pipe, ikcpcb *kcp)
+{
+	for (size_t i = 0; i < pipe.queue.size(); i++) {
+		ikcp_input(kcp, &pipe.queue[i][0], (long)pipe.queue[i].size());
+	}
+	pipe.queue.clear();
+}
+
+// 在本地链路上发送 len 字节，返回 ikcp_send 的结果；收到的字节数
+// 通过 *received 返回（-1 表示未完整收到）。
+static int pipe_transfer(int rcvwnd, int len, int stream, int *received)
+{
+	KcpPipe p1, p2;
+	ikcpcb *kcp1 = ikcp_create(0x44944944, &p1);
+	ikcpcb *kcp2 = ikcp_create(0x44944944, &p2);
+	char *data = (char*)malloc(len);
+	char *recv = (char*)malloc(len + 16);
+	int ret, total = 0, iter;
+	IUINT32 now = 0;
+
+	assert(kcp1 && kcp2 && data && recv);
+
+	kcp1->output = pipe_output;
+	kcp2->output = pipe_output;
+	kcp1->stream = stream;
+	kcp2->stream = stream;
+	ikcp_wndsize(kcp1, 4096, rcvwnd);
+	ikcp_wndsize(kcp2, 4096, rcvwnd);
+	ikcp_nodelay(kcp1, 1, 10, 2, 1);
+	ikcp_nodelay(kcp2, 1, 10, 2, 1);
+
+	for (int i = 0; i < len; i++) data[i] = (char)((i * 31 + 7) & 0xff);
+
+	ret = ikcp_send(kcp1, data, len);
+
+	for (iter = 0; iter < 200000 && total < len; iter++) {
+		int hr;
+		now += 10;
+		ikcp_update(kcp1, now);
+		pipe_pump(p1, kcp2);
+		ikcp_update(kcp2, now);
+		pipe_pump(p2, kcp1);
+		while ((hr = ikcp_recv(kcp2, recv + total, len + 16 - total)) > 0) {
+			total += hr;
+		}
+	}
+
+	if (ret == len && total == len && memcmp(data, recv, len) == 0) {
+		*received = total;
+	}	else {
+		*received = -1;
+	}
+
+	ikcp_release(kcp1);
+	ikcp_release(kcp2);
+	free(data);
+	free(recv);
+	return ret;
+}
+
+static void test_issue_449(void)
+{
+	int mss, received, ret;
+
+	printf("==== issue #449 regression tests ====\n");
+
+	// 默认窗口下，单次最多 128 个分片（与旧行为一致）
+	{
+		ikcpcb *probe = ikcp_create(0x44944944, NULL);
+		assert(probe != NULL);
+		mss = (int)probe->mss;
+		ikcp_release(probe);
+	}
+
+	ret = pipe_transfer((int)IKCP_WND_RCV, (int)IKCP_WND_RCV * mss, 0, &received);
+	if (ret != -2) {
+		printf("[FAIL] default window: 128 fragments should be rejected, got %d\n", ret);
+		exit(1);
+	}
+	printf("[PASS] default rcv_wnd still rejects 128 fragments\n");
+
+	// 调大 rcv_wnd 后，可以发送超过 IKCP_WND_RCV 个分片的消息
+	ret = pipe_transfer(1024, 200 * mss, 0, &received);
+	if (ret != 200 * mss || received != 200 * mss) {
+		printf("[FAIL] enlarged window: 200 fragments, send=%d recv=%d\n", ret, received);
+		exit(1);
+	}
+	printf("[PASS] enlarged rcv_wnd allows a 200-fragment message\n");
+
+	// 消息模式的分片数上限是 8 位 frg 字段能表示的范围
+	ret = pipe_transfer(4096, 256 * mss, 0, &received);
+	if (ret != 256 * mss || received != 256 * mss) {
+		printf("[FAIL] message mode: 256 fragments, send=%d recv=%d\n", ret, received);
+		exit(1);
+	}
+	printf("[PASS] message mode allows 256 fragments (max frg)\n");
+
+	ret = pipe_transfer(4096, 257 * mss, 0, &received);
+	if (ret != -2) {
+		printf("[FAIL] message mode: 257 fragments must be rejected, got %d\n", ret);
+		exit(1);
+	}
+	printf("[PASS] message mode rejects 257 fragments (frg overflow)\n");
+
+	// 流模式不使用 frg，因此只受窗口约束
+	ret = pipe_transfer(4096, 300 * mss, 1, &received);
+	if (ret != 300 * mss || received != 300 * mss) {
+		printf("[FAIL] stream mode: 300 fragments, send=%d recv=%d\n", ret, received);
+		exit(1);
+	}
+	printf("[PASS] stream mode allows 300 fragments\n");
+
+	// 消息大于窗口时仍然被拒绝
+	ret = pipe_transfer(128, 200 * mss, 0, &received);
+	if (ret != -2) {
+		printf("[FAIL] message larger than window must be rejected, got %d\n", ret);
+		exit(1);
+	}
+	printf("[PASS] message larger than rcv_wnd is rejected\n");
+
+	printf("==== issue #449 regression tests passed ====\n");
+}
+
 int main()
 {
+	test_issue_449();	// issue #449 回归测试
 	test(0);	// 默认模式，类似 TCP：正常模式，无快速重传，常规流控
 	test(1);	// 普通模式，关闭流控等
 	test(2);	// 快速模式，所有开关都打开，且关闭流控
