@@ -1231,6 +1231,23 @@ void ikcp_flush(ikcpcb *kcp)
 
 
 //---------------------------------------------------------------------
+// check if a retransmission of any outstanding segment is due
+//---------------------------------------------------------------------
+static int ikcp_retrans_due(const ikcpcb *kcp, IUINT32 current)
+{
+	struct IQUEUEHEAD *p;
+
+	for (p = kcp->snd_buf.next; p != &kcp->snd_buf; p = p->next) {
+		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
+		if (_itimediff(current, seg->resendts) >= 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+
+//---------------------------------------------------------------------
 // update state (call it repeatedly, every 10ms-100ms), or you can ask
 // ikcp_check when to call it again (if no ikcp_input/_send calls occur).
 // 'current' - current timestamp in milliseconds.
@@ -1258,6 +1275,10 @@ void ikcp_update(ikcpcb *kcp, IUINT32 current)
 		if (_itimediff(kcp->current, kcp->ts_flush) >= 0) {
 			kcp->ts_flush = kcp->current + kcp->interval;
 		}
+		ikcp_flush(kcp);
+	}	else if (ikcp_retrans_due(kcp, kcp->current)) {
+		// a retransmission is due: flush now instead of waiting for the
+		// next ts_flush, so that ikcp_check can promise to wake up earlier
 		ikcp_flush(kcp);
 	}
 }
