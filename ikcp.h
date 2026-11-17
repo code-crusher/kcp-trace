@@ -388,7 +388,12 @@ void ikcp_setoutput(ikcpcb *kcp, int (*output)(const char *buf, int len,
 // user/upper level recv: returns size, returns below zero for EAGAIN
 int ikcp_recv(ikcpcb *kcp, char *buffer, int len);
 
-// user/upper level send, returns below zero for error
+// user/upper level send, returns the number of bytes accepted, or below
+// zero for error (-2: try again later).
+// In message mode (stream == 0) a single call may carry at most
+// IKCP_WND_RCV-1 fragments, because the receiver must buffer a whole
+// message before it can be read. In stream mode (stream != 0) there is
+// no message boundary and any length is accepted.
 int ikcp_send(ikcpcb *kcp, const char *buffer, int len);
 
 // update state (call it repeatedly, every 10ms-100ms), or you can ask 

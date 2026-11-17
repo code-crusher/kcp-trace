@@ -513,11 +513,14 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 	}
 
 	if (len <= (int)kcp->mss) count = 1;
-	else count = (len + kcp->mss - 1) / kcp->mss;
+	else count = (len - 1) / (int)kcp->mss + 1;
 
-	if (count >= (int)IKCP_WND_RCV) {
-		if (kcp->stream != 0 && sent > 0) 
-			return sent;
+	// message mode: the receive window must be able to hold the whole
+	// message, so a single send may not exceed IKCP_WND_RCV fragments.
+	// stream mode has no message boundaries (every segment has frg == 0),
+	// the receiver consumes segments as they arrive, so any length can be
+	// queued and the usual window/congestion control paces the transfer.
+	if (kcp->stream == 0 && count >= (int)IKCP_WND_RCV) {
 		return -2;
 	}
 
@@ -529,6 +532,10 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 		seg = ikcp_segment_new(kcp, size);
 		assert(seg);
 		if (seg == NULL) {
+			// in stream mode the bytes queued so far are still a valid
+			// prefix of the stream, report them as accepted
+			if (kcp->stream != 0 && sent > 0)
+				return sent;
 			return -2;
 		}
 		if (buffer && len > 0) {
