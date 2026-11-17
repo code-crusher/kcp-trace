@@ -56,7 +56,12 @@ if(BUILD_TESTING)
     enable_language(CXX)
 
     add_executable(kcp_test test.cpp)
+    add_executable(kcp_test_rto test_rto.cpp)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
+        target_compile_options(kcp_test_rto PRIVATE /utf-8)
     endif()
+
+    add_test(NAME kcp_test COMMAND kcp_test)
+    add_test(NAME kcp_test_rto COMMAND kcp_test_rto)
 endif()

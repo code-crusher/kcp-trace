@@ -584,6 +584,27 @@ static void ikcp_shrink_buf(ikcpcb *kcp)
 	}
 }
 
+//---------------------------------------------------------------------
+// check whether 'ts' is the timestamp of the latest transmission of
+// 'sn'. only such an ack yields a valid rtt sample: a stale ack, like
+// the original of a packet recovered by fec after its retransmission
+// has been acked, would otherwise inflate rx_rto.
+//---------------------------------------------------------------------
+static int ikcp_ack_is_latest(ikcpcb *kcp, IUINT32 sn, IUINT32 ts)
+{
+	struct IQUEUEHEAD *p;
+	for (p = kcp->snd_buf.next; p != &kcp->snd_buf; p = p->next) {
+		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
+		if (seg->sn == sn) {
+			return (seg->ts == ts);
+		}
+		if (_itimediff(sn, seg->sn) < 0) {
+			break;
+		}
+	}
+	return 0;
+}
+
 static void ikcp_parse_ack(ikcpcb *kcp, IUINT32 sn)
 {
 	struct IQUEUEHEAD *p, *next;
@@ -821,13 +842,17 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 			return -3;
 
 		kcp->rmt_wnd = wnd;
+
+		// sample rtt before parse_una drops the segment being acked
+		if (cmd == IKCP_CMD_ACK && ikcp_ack_is_latest(kcp, sn, ts) &&
+			_itimediff(kcp->current, ts) >= 0) {
+			ikcp_update_ack(kcp, _itimediff(kcp->current, ts));
+		}
+
 		ikcp_parse_una(kcp, una);
 		ikcp_shrink_buf(kcp);
 
 		if (cmd == IKCP_CMD_ACK) {
-			if (_itimediff(kcp->current, ts) >= 0) {
-				ikcp_update_ack(kcp, _itimediff(kcp->current, ts));
-			}
 			ikcp_parse_ack(kcp, sn);
 			ikcp_shrink_buf(kcp);
 			if (flag == 0) {
