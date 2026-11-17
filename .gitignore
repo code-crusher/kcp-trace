@@ -67,3 +67,6 @@ __pycache__/*
 nul
 
 
+
+/kcp_test
+/test_cwnd
