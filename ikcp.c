@@ -349,6 +349,87 @@ void ikcp_release(ikcpcb *kcp)
 
 
 //---------------------------------------------------------------------
+// reset a kcpcb to its initial sequence state
+//
+// this keeps conv, configuration (wndsize/nodelay/mtu/stream), callbacks
+// and the user pointer intact, but rewinds all sequence number state
+// (snd_una/snd_nxt/rcv_nxt) and drops buffered data, so a link whose
+// peer lost its state (e.g. server restart) can be re-established
+// without reallocating the kcp object or re-reading configuration.
+//
+// data that has never been sent (in snd_queue) is kept and will be sent
+// with the rebased sequence numbers. data already handed to the network
+// (snd_buf), received-but-unread data (rcv_queue) and out-of-order
+// received data (rcv_buf) is dropped: the peer may or may not have seen
+// it, so replaying it risks duplicating data the application already
+// consumed on the far side. the application should re-send anything it
+// needs after a reset.
+//
+// both endpoints of a link must reset together, otherwise the two
+// sides disagree on the sequence space and the side with the larger
+// rcv_nxt will keep dropping packets. a typical use is to detect a
+// peer that lost its state (e.g. via an application-level heartbeat)
+// and then reset both ends.
+//---------------------------------------------------------------------
+void ikcp_reset(ikcpcb *kcp)
+{
+	IKCPSEG *seg;
+
+	assert(kcp);
+	if (kcp == NULL) return;
+
+	// segments that were already handed to the network may have been
+	// received by the peer before it restarted; dropping them avoids
+	// delivering duplicates to the application after the reset
+	while (!iqueue_is_empty(&kcp->snd_buf)) {
+		seg = iqueue_entry(kcp->snd_buf.next, IKCPSEG, node);
+		iqueue_del(&seg->node);
+		ikcp_segment_delete(kcp, seg);
+		kcp->nsnd_buf--;
+	}
+
+	// drop received data: it belongs to the old sequence space and can
+	// never be delivered in order after the reset
+	while (!iqueue_is_empty(&kcp->rcv_buf)) {
+		seg = iqueue_entry(kcp->rcv_buf.next, IKCPSEG, node);
+		iqueue_del(&seg->node);
+		ikcp_segment_delete(kcp, seg);
+		kcp->nrcv_buf--;
+	}
+	while (!iqueue_is_empty(&kcp->rcv_queue)) {
+		seg = iqueue_entry(kcp->rcv_queue.next, IKCPSEG, node);
+		iqueue_del(&seg->node);
+		ikcp_segment_delete(kcp, seg);
+		kcp->nrcv_que--;
+	}
+
+	kcp->snd_una = 0;
+	kcp->snd_nxt = 0;
+	kcp->rcv_nxt = 0;
+	kcp->ts_recent = 0;
+	kcp->ts_lastack = 0;
+	kcp->ts_probe = 0;
+	kcp->probe_wait = 0;
+	kcp->probe = 0;
+	kcp->cwnd = 0;
+	kcp->incr = 0;
+
+	// drop pending acks: they refer to the old sequence space
+	kcp->ackcount = 0;
+	kcp->ackedlen = 0;
+
+	// rewind congestion control to its initial state
+	kcp->ssthresh = IKCP_THRESH_INIT;
+	kcp->xmit = 0;
+	kcp->rx_srtt = 0;
+	kcp->rx_rttval = 0;
+	kcp->rx_rto = IKCP_RTO_DEF;
+	kcp->state = 0;
+	kcp->updated = 0;
+	kcp->ts_flush = IKCP_INTERVAL;
+}
+
+//---------------------------------------------------------------------
 // set output callback, which will be invoked by kcp
 //---------------------------------------------------------------------
 void ikcp_setoutput(ikcpcb *kcp, int (*output)(const char *buf, int len,

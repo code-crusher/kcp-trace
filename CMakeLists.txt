@@ -13,6 +13,7 @@ if(BUILD_SHARED_LIBS AND WIN32)
 "EXPORTS 
     ikcp_create
     ikcp_release
+    ikcp_reset
     ikcp_setoutput
     ikcp_recv
     ikcp_send
@@ -59,4 +60,10 @@ if(BUILD_TESTING)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
     endif()
+
+    add_executable(kcp_test_reset test_reset.cpp)
+    if(MSVC AND NOT (MSVC_VERSION LESS 1900))
+        target_compile_options(kcp_test_reset PRIVATE /utf-8)
+    endif()
+    add_test(NAME kcp_test_reset COMMAND kcp_test_reset)
 endif()

@@ -381,6 +381,15 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user);
 // release kcp control object
 void ikcp_release(ikcpcb *kcp);
 
+// reset kcp control object to its initial sequence state, keeping conv,
+// configuration and callbacks. use it to recover a link whose peer lost
+// its state (e.g. after a server restart): reset both endpoints, then
+// the sequence numbers start from zero again and the link works without
+// recreating the objects. unsent data in snd_queue is kept, all other
+// buffered/in-flight data is dropped, and the application is responsible
+// for re-sending anything unacknowledged; both endpoints must reset.
+void ikcp_reset(ikcpcb *kcp);
+
 // set output callback, which will be invoked by kcp
 void ikcp_setoutput(ikcpcb *kcp, int (*output)(const char *buf, int len, 
 	ikcpcb *kcp, void *user));
