@@ -835,16 +835,17 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 				maxack = sn;
 				latest_ts = ts;
 			}	else {
+				// a larger acked sn always advances maxack, while
+				// latest_ts only follows newer ts, the two checks are
+				// independent. (see issue #422: an ack with a larger sn
+				// but an older or equal ts used to be dropped entirely,
+				// stalling maxack and skipping the fastack++ of the
+				// segments below it)
 				if (_itimediff(sn, maxack) > 0) {
-				#ifndef IKCP_FASTACK_CONSERVE
 					maxack = sn;
+				}
+				if (_itimediff(ts, latest_ts) > 0) {
 					latest_ts = ts;
-				#else
-					if (_itimediff(ts, latest_ts) > 0) {
-						maxack = sn;
-						latest_ts = ts;
-					}
-				#endif
 				}
 			}
 			if (ikcp_canlog(kcp, IKCP_LOG_IN_ACK)) {

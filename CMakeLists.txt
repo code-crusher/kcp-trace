@@ -59,4 +59,12 @@ if(BUILD_TESTING)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
     endif()
+
+    add_executable(kcp_test_fastack test_fastack.cpp)
+    if(MSVC AND NOT (MSVC_VERSION LESS 1900))
+        target_compile_options(kcp_test_fastack PRIVATE /utf-8)
+    endif()
+
+    add_test(NAME kcp_test COMMAND kcp_test)
+    add_test(NAME kcp_test_fastack COMMAND kcp_test_fastack)
 endif()
