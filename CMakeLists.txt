@@ -59,4 +59,8 @@ if(BUILD_TESTING)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
     endif()
+
+    add_executable(kcp_setmtu_test test_setmtu.c)
+    target_link_libraries(kcp_setmtu_test PRIVATE kcp)
+    add_test(NAME setmtu COMMAND kcp_setmtu_test)
 endif()

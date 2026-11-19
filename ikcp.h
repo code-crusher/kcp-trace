@@ -339,6 +339,7 @@ struct IKCPCB
 	IUINT32 ackcount;
 	IUINT32 ackblock;
 	IUINT32 ackedlen;
+	IUINT32 bufsize;
 	void *user;
 	char *buffer;
 	int fastresend;

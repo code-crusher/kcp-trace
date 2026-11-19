@@ -259,6 +259,7 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user)
 		ikcp_free(kcp);
 		return NULL;
 	}
+	kcp->bufsize = (kcp->mtu + IKCP_OVERHEAD) * 3;
 
 	iqueue_init(&kcp->snd_queue);
 	iqueue_init(&kcp->rcv_queue);
@@ -342,6 +343,7 @@ void ikcp_release(ikcpcb *kcp)
 		kcp->nsnd_que = 0;
 		kcp->ackcount = 0;
 		kcp->buffer = NULL;
+		kcp->bufsize = 0;
 		kcp->acklist = NULL;
 		ikcp_free(kcp);
 	}
@@ -1315,13 +1317,21 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 int ikcp_setmtu(ikcpcb *kcp, int mtu)
 {
 	char *buffer;
-	if (mtu < 50 || mtu < (int)IKCP_OVERHEAD) 
+	size_t newsize;
+	if (mtu < 50 || mtu < (int)IKCP_OVERHEAD)
 		return -1;
-	buffer = (char*)ikcp_malloc((mtu + IKCP_OVERHEAD) * 3);
-	if (buffer == NULL) 
+	newsize = ((size_t)mtu + IKCP_OVERHEAD) * 3;
+	// segments queued with an older, larger mss can still be waiting in
+	// snd_buf/snd_queue, and ikcp_flush copies one whole segment plus
+	// header into kcp->buffer. never shrink the buffer below what any
+	// queued segment can occupy.
+	if (newsize < (size_t)kcp->bufsize) newsize = kcp->bufsize;
+	buffer = (char*)ikcp_malloc(newsize);
+	if (buffer == NULL)
 		return -2;
 	kcp->mtu = mtu;
 	kcp->mss = kcp->mtu - IKCP_OVERHEAD;
+	kcp->bufsize = (IUINT32)newsize;
 	ikcp_free(kcp->buffer);
 	kcp->buffer = buffer;
 	return 0;
