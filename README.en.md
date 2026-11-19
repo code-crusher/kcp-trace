@@ -158,6 +158,19 @@ The protocol default mode is a standard ARQ, and various acceleration switches c
    kcp->rx_minrto = 10;
    ```
 
+5. Send queue length limit:
+
+   To keep the upper layer simple, ikcp_send never returns EAGAIN: when the send window is full, data stays pending in snd_queue (see the wiki: "Flow Control for Users"). But if the peer is offline or has zero receive capability, the pending packets pile up without bound. To let the protocol stack enforce a limit by itself, set a cap on the send queue length:
+
+   ```cpp
+   // When the pending packets (snd_buf + snd_queue) reach maxwaitsnd,
+   // ikcp_send returns -2 (EAGAIN) and stops queueing more data;
+   // 0 means unlimited (default behavior).
+   void ikcp_setmaxwaitsnd(ikcpcb *kcp, int maxwaitsnd);
+   ```
+
+   This mirrors a TCP send returning EAGAIN on a full socket buffer: upon -2 the upper layer can retry later, or decide the peer has no receive capability and disconnect.
+
 
 
 # Document Indexing

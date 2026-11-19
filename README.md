@@ -141,6 +141,19 @@ vcpkg中的kcp库由Microsoft团队成员和社区贡献者保持最新状态。
    kcp->rx_minrto = 10;
    ```
 
+5. 发送队列长度限制：
+
+   KCP为了简化上层的调用，ikcp_send 从不返回 EAGAIN，发送窗口满时数据会滞留在 snd_queue 里等待发送（见 wiki：《如何避免缓存积累延迟》）。但对端离线或者接收能力为零时，滞留的包会无限制堆积。如果需要由协议栈自身来兜底，可以设置发送队列长度上限：
+
+   ```cpp
+   // 待发送数据（snd_buf + snd_queue）达到 maxwaitsnd 个包时，
+   // ikcp_send 返回 -2 (EAGAIN)，不再往队列里追加数据；
+   // 0 表示不限制（默认行为）。
+   void ikcp_setmaxwaitsnd(ikcpcb *kcp, int maxwaitsnd);
+   ```
+
+   该调用类似 TCP send 在 socket 缓冲区写满时返回 EAGAIN 的语义：上层收到 -2 后可以稍后重试发送，或者判定对端无接收能力并断开连接。
+
 
 # 文档索引
 

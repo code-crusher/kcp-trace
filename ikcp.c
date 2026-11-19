@@ -289,6 +289,7 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user)
 	kcp->nocwnd = 0;
 	kcp->xmit = 0;
 	kcp->dead_link = IKCP_DEADLINK;
+	kcp->max_waitsnd = 0;
 	kcp->output = NULL;
 	kcp->ccops = NULL;
 	kcp->congest = NULL;
@@ -469,6 +470,17 @@ int ikcp_peeksize(const ikcpcb *kcp)
 }
 
 
+// check whether the waiting-to-be-sent packets (nsnd_buf + nsnd_que)
+// have reached kcp->max_waitsnd, returns non-zero if so
+static int ikcp_waitsnd_full(const ikcpcb *kcp)
+{
+	if (kcp->max_waitsnd > 0 && kcp->nsnd_buf + kcp->nsnd_que >= kcp->max_waitsnd) {
+		return 1;
+	}
+	return 0;
+}
+
+
 //---------------------------------------------------------------------
 // upper-level send: returns size, or a negative value on error
 //---------------------------------------------------------------------
@@ -480,6 +492,10 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 
 	assert(kcp->mss > 0);
 	if (len < 0) return -1;
+
+	// if the waiting queue has reached the max_waitsnd limit, behave like
+	// a tcp send on a full socket buffer: report EAGAIN to the caller
+	if (ikcp_waitsnd_full(kcp)) return -2;
 
 	// append to previous segment in streaming mode (if possible)
 	if (kcp->stream != 0) {
@@ -1377,6 +1393,17 @@ int ikcp_wndsize(ikcpcb *kcp, int sndwnd, int rcvwnd)
 int ikcp_waitsnd(const ikcpcb *kcp)
 {
 	return kcp->nsnd_buf + kcp->nsnd_que;
+}
+
+
+// limit how many packets can be waiting to be sent: when ikcp_waitsnd()
+// reaches maxwaitsnd, ikcp_send returns -2 (EAGAIN) instead of queueing
+// more data. maxwaitsnd <= 0 means unlimited (default).
+void ikcp_setmaxwaitsnd(ikcpcb *kcp, int maxwaitsnd)
+{
+	if (kcp) {
+		kcp->max_waitsnd = (maxwaitsnd > 0)? (IUINT32)maxwaitsnd : 0;
+	}
 }
 
 

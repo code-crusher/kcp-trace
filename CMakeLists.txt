@@ -24,6 +24,7 @@ if(BUILD_SHARED_LIBS AND WIN32)
     ikcp_setmtu
     ikcp_wndsize
     ikcp_waitsnd
+    ikcp_setmaxwaitsnd
     ikcp_nodelay
     ikcp_log
     ikcp_allocator
@@ -59,4 +60,11 @@ if(BUILD_TESTING)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
     endif()
+
+    add_executable(kcp_test411 test411.cpp)
+    if(MSVC AND NOT (MSVC_VERSION LESS 1900))
+        target_compile_options(kcp_test411 PRIVATE /utf-8)
+    endif()
+
+    add_test(NAME kcp_test411 COMMAND kcp_test411)
 endif()

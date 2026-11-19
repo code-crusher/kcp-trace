@@ -331,6 +331,7 @@ struct IKCPCB
 	IUINT32 nodelay, updated;
 	IUINT32 ts_probe, probe_wait;
 	IUINT32 dead_link, incr;
+	IUINT32 max_waitsnd;
 	struct IQUEUEHEAD snd_queue;
 	struct IQUEUEHEAD rcv_queue;
 	struct IQUEUEHEAD snd_buf;
@@ -422,6 +423,12 @@ int ikcp_wndsize(ikcpcb *kcp, int sndwnd, int rcvwnd);
 
 // get how many packets are waiting to be sent
 int ikcp_waitsnd(const ikcpcb *kcp);
+
+// limit how many packets can be waiting to be sent (nsnd_buf + nsnd_que):
+// when ikcp_waitsnd() reaches this threshold, ikcp_send returns -2 (EAGAIN)
+// instead of queueing more data, so a stalled/dead peer can no longer make
+// the send queue grow without bound. 0 = unlimited (default).
+void ikcp_setmaxwaitsnd(ikcpcb *kcp, int maxwaitsnd);
 
 // fastest: ikcp_nodelay(kcp, 1, 20, 2, 1)
 // nodelay: 0:disable (default), 1:enable
