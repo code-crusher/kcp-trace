@@ -19,6 +19,7 @@ if(BUILD_SHARED_LIBS AND WIN32)
     ikcp_update
     ikcp_check
     ikcp_input
+    ikcp_input_with_current
     ikcp_flush
     ikcp_peeksize
     ikcp_setmtu
@@ -59,4 +60,11 @@ if(BUILD_TESTING)
     if(MSVC AND NOT (MSVC_VERSION LESS 1900))
         target_compile_options(kcp_test PRIVATE /utf-8)
     endif()
+
+    add_executable(kcp_test410 test410.cpp)
+    if(MSVC AND NOT (MSVC_VERSION LESS 1900))
+        target_compile_options(kcp_test410 PRIVATE /utf-8)
+    endif()
+
+    add_test(NAME kcp_test410 COMMAND kcp_test410)
 endif()

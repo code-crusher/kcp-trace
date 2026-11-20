@@ -122,6 +122,20 @@ Microsoft team members and community contributors keep the kcp port in vcpkg up 
    ikcp_input(kcp, received_udp_packet, received_udp_size);
    ```
 
+   `ikcp_input` timestamps the packets with `kcp->current`, the clock passed to the
+   last `ikcp_update`. If packets arrive between two update calls, that clock may
+   already be stale and the measured RTT comes out too small. Read the clock once
+   after poll returns, then feed the whole batch through
+   `ikcp_input_with_current` (no `ikcp_update` call is needed):
+
+   ```cpp
+   // packets received together share one timestamp, so RTT samples stay accurate
+   IUINT32 now = iclock();
+   while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+       ikcp_input_with_current(kcp, now, buf, n);
+   }
+   ```
+
    After processing the output/input of the lower layer protocols, the KCP protocol can work normally. ikcp_send is used to send data to the remote end, while the other end uses ikcp_recv (kcp, ptr, size) to receive the data.
 
 

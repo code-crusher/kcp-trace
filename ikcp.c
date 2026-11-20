@@ -779,12 +779,19 @@ void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
 //---------------------------------------------------------------------
 int ikcp_input(ikcpcb *kcp, const char *data, long size)
 {
+	return ikcp_input_with_current(kcp, kcp->current, data, size);
+}
+
+int ikcp_input_with_current(ikcpcb *kcp, IUINT32 current, const char *data,
+		long size)
+{
 	IUINT32 prev_una = kcp->snd_una;
 	IUINT32 prev_nsnd_buf = kcp->nsnd_buf;
 	IUINT32 acked_segs, prior_in_flight;
 	IUINT32 maxack = 0, latest_ts = 0;
 	int flag = 0;
 
+	kcp->current = current;
 	kcp->ackedlen = 0;
 
 	if (ikcp_canlog(kcp, IKCP_LOG_INPUT)) {

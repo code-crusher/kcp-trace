@@ -405,8 +405,19 @@ void ikcp_update(ikcpcb *kcp, IUINT32 current);
 // or optimizing ikcp_update when handling massive kcp connections).
 IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current);
 
-// when you receive a low-level packet (e.g., UDP packet), call this
+// when you receive a low-level packet (e.g., UDP packet), call this.
+// the packet is handled with kcp->current as its timestamp, which is the
+// clock value passed to the last ikcp_update.
 int ikcp_input(ikcpcb *kcp, const char *data, long size);
+
+// same as ikcp_input, but handles the packets with 'current' as their
+// timestamp ('current' in millisec) instead of kcp->current, so rtt
+// samples and retransmission timers stay accurate when the clock has
+// advanced since the last ikcp_update. kcp->current is updated too.
+// typical usage: refresh the clock once after poll/wait and feed a batch
+// of packets received at the same time.
+int ikcp_input_with_current(ikcpcb *kcp, IUINT32 current, const char *data,
+		long size);
 
 // flush pending data
 void ikcp_flush(ikcpcb *kcp);

@@ -104,6 +104,20 @@ vcpkg中的kcp库由Microsoft团队成员和社区贡献者保持最新状态。
    // 收到一个下层数据包（比如UDP包）时需要调用：
    ikcp_input(kcp, received_udp_packet, received_udp_size);
    ```
+
+   `ikcp_input` 使用上一次 `ikcp_update` 传入的时钟 `kcp->current` 作为包的
+   时间戳。如果包在两次 update 之间到达，时钟可能已经过时，测出的 RTT 会偏小。
+   此时可以在 poll 到数据后先取一次时钟，再用 `ikcp_input_with_current`
+   把同一批包按同一个时间戳送入（不需要先调用 `ikcp_update`）：
+
+   ```cpp
+   // 同一批到达的包共用一个时间戳，RTT 采样更准确
+   IUINT32 now = iclock();
+   while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+       ikcp_input_with_current(kcp, now, buf, n);
+   }
+   ```
+
    处理了下层协议的输出/输入后 KCP协议就可以正常工作了，使用 ikcp_send 来向
    远端发送数据。而另一端使用 ikcp_recv(kcp, ptr, size)来接收数据。
 
